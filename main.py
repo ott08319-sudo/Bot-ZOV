@@ -14,33 +14,37 @@ from piarflow_service import get_sponsors_for_user, check_subscriptions_on_servi
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# --- Middleware Автопроверки Спонсоров ---
+# --- Исправленный Middleware Автопроверки Спонсоров ---
 class SponsorGuardMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
         if not user:
             return await handler(event, data)
             
+        # Пропускаем проверку подписки при клике по кнопкам проверки или возврата
         if isinstance(event, CallbackQuery) and event.data in ("check_sub", "to_main"):
             return await handler(event, data)
 
-        sponsors = await get_sponsors_for_user(user.id)
-        if sponsors:
-            is_subbed = await check_subscriptions_on_service("piarflow", user.id)
-            if not is_subbed:
-                kb = []
-                text = "⚠️ **Для использования бота подпишитесь на каналы:**\n\n"
-                for idx, s in enumerate(sponsors, 1):
-                    text += f"{idx}. Канал #{idx}\n"
-                    kb.append([InlineKeyboardButton(text=f"📢 Подписаться #{idx}", url=s["link"])])
-                kb.append([InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")])
-                
-                markup = InlineKeyboardMarkup(inline_keyboard=kb)
-                if isinstance(event, Message):
-                    await event.answer(text, reply_markup=markup, parse_mode="Markdown")
-                elif isinstance(event, CallbackQuery):
-                    await event.message.answer(text, reply_markup=markup, parse_mode="Markdown")
-                return
+        try:
+            sponsors = await get_sponsors_for_user(user.id)
+            if sponsors:
+                is_subbed = await check_subscriptions_on_service("piarflow", user.id)
+                if not is_subbed:
+                    kb = []
+                    text = "⚠️ **Для использования бота подпишитесь на каналы:**\n\n"
+                    for idx, s in enumerate(sponsors, 1):
+                        text += f"{idx}. Канал #{idx}\n"
+                        kb.append([InlineKeyboardButton(text=f"📢 Подписаться #{idx}", url=s["link"])])
+                    kb.append([InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")])
+                    
+                    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+                    if isinstance(event, Message):
+                        await event.answer(text, reply_markup=markup, parse_mode="Markdown")
+                    elif isinstance(event, CallbackQuery) and event.message:
+                        await event.message.answer(text, reply_markup=markup, parse_mode="Markdown")
+                    return
+        except Exception as e:
+            print(f"SponsorGuard Error: {e}")
 
         return await handler(event, data)
 
@@ -111,17 +115,22 @@ def admin_settings_keyboard():
         [InlineKeyboardButton(text="◀️ Назад", callback_data="to_admin_main")]
     ])
 
-# --- Роутеры и Хэндлеры ---
+# --- Инициализация бота ---
 bot = Bot(token=os.getenv("BOT_TOKEN", ""))
 dp = Dispatcher()
+
+# Регистрация Middleware
 dp.message.middleware(SponsorGuardMiddleware())
 dp.callback_query.middleware(SponsorGuardMiddleware())
 
+# --- Обработчики команд и сообщений ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    args = message.text.split()
+    args = message.text.split() if message.text else []
     ref_id = int(args[1].replace("ref_", "")) if len(args) > 1 and args[1].startswith("ref_") else None
-    await register_user(message.from_user.id, message.from_user.username or "Пользователь", ref_id)
+    
+    user_name = message.from_user.username or message.from_user.first_name or "Пользователь"
+    await register_user(message.from_user.id, user_name, ref_id)
     
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
@@ -139,11 +148,12 @@ async def cmd_start(message: Message):
 @dp.message(F.text == "👤 Профиль")
 async def show_profile(message: Message):
     u = await get_user(message.from_user.id)
-    reg_date = datetime.fromtimestamp(u['created_at']).strftime('%d.%m.%Y') if u else "21.08.2026"
+    reg_date = datetime.fromtimestamp(u['created_at']).strftime('%d.%m.%Y') if (u and 'created_at' in u) else "21.08.2026"
+    username = message.from_user.username or "Пользователь"
     
     text = (
         f"👤 **Твой профиль**\n\n"
-        f"👤 Легендарный @{message.from_user.username}\n"
+        f"👤 Легендарный @{username}\n"
         f"📅 Зарегистрирован: {reg_date}\n\n"
         f"💬 Баланс: {u['balance'] if u else 420.3} ⭐\n"
         f"🏆 Всего заработано: {u['total_earned'] if u else 1251.8} ⭐\n"
@@ -212,7 +222,9 @@ async def show_admin_panel(message: Message):
 
 @dp.callback_query(F.data == "admin_settings")
 async def process_admin_settings(call: CallbackQuery):
-    await call.message.edit_text("⚙️ **Настройки бота**", reply_markup=admin_settings_keyboard(), parse_mode="Markdown")
+    if call.message:
+        await call.message.edit_text("⚙️ **Настройки бота**", reply_markup=admin_settings_keyboard(), parse_mode="Markdown")
+    await call.answer()
 
 @dp.callback_query(F.data == "to_admin_main")
 async def process_to_admin_main(call: CallbackQuery):
@@ -223,12 +235,16 @@ async def process_to_admin_main(call: CallbackQuery):
         f"🚫 Забанено: 0\n"
         f"⭐ Premium: 6"
     )
-    await call.message.edit_text(text, reply_markup=admin_main_keyboard(), parse_mode="Markdown")
+    if call.message:
+        await call.message.edit_text(text, reply_markup=admin_main_keyboard(), parse_mode="Markdown")
+    await call.answer()
 
 @dp.callback_query(F.data == "to_main")
 async def process_to_main(call: CallbackQuery):
-    await call.message.delete()
-    await cmd_start(call.message)
+    if call.message:
+        await call.message.delete()
+        await cmd_start(call.message)
+    await call.answer()
 
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription_callback(call: CallbackQuery):
@@ -238,9 +254,9 @@ async def check_subscription_callback(call: CallbackQuery):
     else:
         await call.answer("❌ Вы подписаны не на все каналы!", show_alert=True)
 
-# --- Веб Сервер для Render ---
+# --- Встроенный Web-сервер для удержания порта на Render ---
 async def health_check(request):
-    return web.Response(text="Bot Alive")
+    return web.Response(text="Bot is running correctly")
 
 async def start_web_server():
     app = web.Application()
@@ -251,6 +267,7 @@ async def start_web_server():
     port = int(os.getenv('PORT', 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
+    print(f"Web server started on port {port}")
 
 async def main():
     await init_db()

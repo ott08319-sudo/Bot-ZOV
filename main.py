@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 
 logging.basicConfig(level=logging.INFO)
 
-# ========== ENV ==========
+# вот тут вот самое важное ребятишки ребятишки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or "0")
 PORT = int(os.getenv("PORT", "10000"))

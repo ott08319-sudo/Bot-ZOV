@@ -3,3 +3,4 @@ asyncpg==0.32.0
 aiohttp[speedups]==3.13.5
 uvloop==0.23.0
 flyerapi==1.3.3
+python-dotenv
